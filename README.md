@@ -146,22 +146,27 @@ private keys or secrets in this tree.
 
 ## GitHub Actions
 
-- `.github/workflows/pr.yml`: build on PRs targeting `main`; no push or publishing
-  credentials.
+- `.github/workflows/pr.yml`: image build and Bash entrypoint syntax checks on PRs
+  targeting `main`; no push or publishing credentials.
 - `.github/workflows/image.yml`: build on pushes to `main`, generate a CycloneDX
   SBOM, scan configuration/secrets and block HIGH/CRITICAL image vulnerabilities
   with Trivy, including vulnerabilities without a fix. Only after all checks
   pass, push the **same scanned image** to `ghcr.io/<owner>/<repository>` with
   `latest` and full commit-SHA tags.
-- Scheduled/manual runs rebuild and scan without publishing. This assesses a
-  fresh build, not necessarily the bytes of a previously published image.
+- Scheduled/manual runs rebuild and scan without publishing, only on `main`.
+  Manual runs targeting other branches are skipped. This assesses a fresh build,
+  not necessarily the bytes of a previously published image.
 - SBOMs are workflow artifacts retained for 30 days. An SBOM inventories software;
   it is not a security guarantee, signature or provenance attestation.
 
 Publication uses the repository's `GITHUB_TOKEN`; no personal access token is
 needed. Repository/organization policy must allow GHCR publication. Configure
 package visibility in GitHub as appropriate. Protect `main` with required PR
-checks to prevent direct changes bypassing review.
+checks (`Bash syntax` and `Image build`) to prevent direct changes bypassing
+review. In repository Settings > Code security, enable Dependabot alerts and
+Dependabot security updates. The Dependabot configuration schedules Docker and
+GitHub Actions version updates against the default branch; keep `main` as the
+default branch.
 
 The initial CI target is `linux/amd64`. Debian and Trivy images are pinned by
 digest; GitHub Actions currently use major-version references. Dependabot proposes
