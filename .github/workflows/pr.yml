@@ -1,4 +1,4 @@
-name: Pull request build
+name: Pull request checks
 
 on:
   pull_request:
@@ -12,7 +12,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  bash-syntax:
+    name: Bash syntax
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check entrypoint syntax
+        run: bash -n rootfs/usr/local/bin/ssh-agent-entrypoint
+
   build:
+    name: Image build
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
