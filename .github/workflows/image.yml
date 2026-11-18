@@ -1,0 +1,98 @@
+name: Image publication and security
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TRIVY_IMAGE: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build the image to scan
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          platforms: linux/amd64
+          tags: local/ssh-agent:scan
+          provenance: false
+      - name: Generate SBOM and scan image, secrets and configuration
+        env:
+          REPORT_DIR: ${{ runner.temp }}/reports
+          CACHE_DIR: ${{ runner.temp }}/trivy-cache
+        run: |
+          set -euo pipefail
+          mkdir -p "$REPORT_DIR" "$CACHE_DIR"
+          docker save local/ssh-agent:scan --output "$RUNNER_TEMP/image.tar"
+
+          trivy() {
+            docker run --rm \
+              --user "$(id -u):$(id -g)" \
+              --cap-drop ALL \
+              --security-opt no-new-privileges:true \
+              --read-only \
+              --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+              --env TRIVY_CACHE_DIR=/cache \
+              --volume "$CACHE_DIR:/cache" \
+              --volume "$REPORT_DIR:/reports" \
+              --volume "$RUNNER_TEMP/image.tar:/image.tar:ro" \
+              --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+              "$TRIVY_IMAGE" "$@"
+          }
+
+          trivy image --input /image.tar --scanners vuln \
+            --format cyclonedx --output /reports/sbom.cdx.json
+          trivy config --severity HIGH,CRITICAL --exit-code 1 /workspace
+          trivy fs --scanners secret --exit-code 1 /workspace
+          trivy sbom --scanners vuln --severity HIGH,CRITICAL \
+            --exit-code 1 /reports/sbom.cdx.json
+      - name: Upload SBOM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.sha }}
+          path: ${{ runner.temp }}/reports/sbom.cdx.json
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Sign in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the scanned image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${REPOSITORY,,}"
+          docker tag local/ssh-agent:scan "$image:$COMMIT_SHA"
+          docker tag local/ssh-agent:scan "$image:latest"
+          docker push "$image:$COMMIT_SHA"
+          docker push "$image:latest"
