@@ -14,6 +14,6 @@ COPY --chown=0:0 rootfs/ /
 USER 2521:2522
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD ["env", "SSH_AUTH_SOCK=/run/ssh-agent/agent.sock", "ssh-add", "-l"]
+    CMD ["env", "SSH_AUTH_SOCK=/run/ssh-agent/auth.sock", "ssh-add", "-l"]
 
 ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/ssh-agent-entrypoint"]
