@@ -4,7 +4,7 @@ umask 077
 
 KEY_DIR=/var/lib/ssh-agent/keys
 SOCKET_DIR=/run/ssh-agent
-SSH_AUTH_SOCK=$SOCKET_DIR/agent.sock
+SSH_AUTH_SOCK=$SOCKET_DIR/auth.sock
 export SSH_AUTH_SOCK
 PRIVATE_KEY=$KEY_DIR/id_ed25519
 PUBLIC_KEY=$PRIVATE_KEY.pub

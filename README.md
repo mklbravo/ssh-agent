@@ -8,7 +8,7 @@ startup, loads it, and prints its public key and fingerprint on every startup.
 
 ```text
 Consumer (any UID, supplementary GID 2522)
-    -> /run/ssh-agent/agent.sock (group-accessible socat socket)
+    -> /run/ssh-agent/auth.sock (group-accessible socat socket)
     -> /var/lib/ssh-agent/keys/.agent.sock (private OpenSSH socket)
     -> ssh-agent (UID 2521, GID 2522)
 ```
@@ -65,7 +65,7 @@ services:
     group_add:
       - "2522"
     environment:
-      SSH_AUTH_SOCK: /run/ssh-agent/agent.sock
+      SSH_AUTH_SOCK: /run/ssh-agent/auth.sock
     volumes:
       - agent-socket:/run/ssh-agent:ro
     depends_on:
@@ -95,7 +95,7 @@ A read-only socket-volume mount prevents filesystem modifications; it does
 | `id_ed25519` inside that volume | `2521:2522` | `0600` | Private identity |
 | `.agent.sock` inside that volume | `2521:2522` | Owner-only | Private agent socket |
 | `/run/ssh-agent` | `2521:2522` | `0710` | Shared socket directory |
-| `/run/ssh-agent/agent.sock` | `2521:2522` | `0660` | Consumer access via GID 2522 |
+| `/run/ssh-agent/auth.sock` | `2521:2522` | `0660` | Consumer access via GID 2522 |
 
 Fresh Docker-managed named volumes inherit the prepared image directories'
 ownership and permissions. Existing volumes and host bind mounts must already
