@@ -1,0 +1,148 @@
+#!/bin/bash
+set -euo pipefail
+umask 077
+
+KEY_DIR=/var/lib/ssh-agent/keys
+SOCKET_DIR=/run/ssh-agent
+SSH_AUTH_SOCK=$SOCKET_DIR/agent.sock
+export SSH_AUTH_SOCK
+PRIVATE_KEY=$KEY_DIR/id_ed25519
+PUBLIC_KEY=$PRIVATE_KEY.pub
+PRIVATE_SOCKET=$KEY_DIR/.agent.sock
+agent_pid=
+proxy_pid=
+work_dir=
+
+fail() {
+  printf 'Error: %s\n' "$*" >&2
+  exit 1
+}
+
+cleanup() {
+  if [ -n "$proxy_pid" ]; then
+    kill -TERM "$proxy_pid" 2>/dev/null || :
+  fi
+  if [ -n "$agent_pid" ]; then
+    kill -TERM "$agent_pid" 2>/dev/null || :
+  fi
+  if [ -n "$proxy_pid" ]; then
+    wait "$proxy_pid" 2>/dev/null || :
+    rm -f -- "$SSH_AUTH_SOCK"
+  fi
+  if [ -n "$agent_pid" ]; then
+    wait "$agent_pid" 2>/dev/null || :
+    rm -f -- "$PRIVATE_SOCKET"
+  fi
+  if [ -n "$work_dir" ]; then
+    rm -rf -- "$work_dir"
+  fi
+}
+
+require_directory() {
+  directory=$1
+  expected=$2
+  [ ! -L "$directory" ] && [ -d "$directory" ] ||
+    fail "$directory must be a real directory, not a symlink."
+  actual=$(stat -c '%u:%g:%a' -- "$directory")
+  [ "$actual" = "$expected" ] ||
+    fail "$directory must have owner/group/mode $expected; found $actual."
+}
+
+lock_directory() {
+  lock=$1/.agent.lock
+  [ ! -L "$lock" ] || fail "$lock must not be a symlink."
+  if [ -e "$lock" ]; then
+    [ -f "$lock" ] || fail "$lock must be a regular file."
+    [ "$(stat -c '%u:%g:%a' -- "$lock")" = '2521:2522:600' ] ||
+      fail "$lock must have owner/group/mode 2521:2522:600."
+  fi
+}
+
+[ "$#" -eq 0 ] || fail 'This image does not accept command arguments.'
+[ "$(id -u):$(id -g)" = '2521:2522' ] ||
+  fail 'Run the agent as UID 2521 and primary GID 2522.'
+require_directory "$KEY_DIR" '2521:2522:700'
+require_directory "$SOCKET_DIR" '2521:2522:710'
+
+# Lock both volumes: different key volumes must not share one socket volume.
+lock_directory "$KEY_DIR"
+exec 9>"$KEY_DIR/.agent.lock"
+flock --exclusive --nonblock 9 || fail 'The key volume is already in use.'
+lock_directory "$SOCKET_DIR"
+exec 8>"$SOCKET_DIR/.agent.lock"
+flock --exclusive --nonblock 8 || fail 'The socket volume is already in use.'
+
+trap 'cleanup' EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
+
+[ ! -L "$PRIVATE_KEY" ] || fail 'The private key must not be a symlink.'
+[ ! -L "$PUBLIC_KEY" ] || fail 'The public key must not be a symlink.'
+work_dir=$(mktemp -d "$KEY_DIR/.startup.XXXXXXXX")
+
+if [ ! -e "$PRIVATE_KEY" ]; then
+  [ ! -e "$PUBLIC_KEY" ] ||
+    fail 'A public key exists without its private key; refusing to replace the identity.'
+  ssh-keygen -q -t ed25519 -N '' -C 'container-ssh-agent' \
+    -f "$work_dir/id_ed25519"
+  mv -T -- "$work_dir/id_ed25519" "$PRIVATE_KEY"
+fi
+
+[ -f "$PRIVATE_KEY" ] || fail 'The private key must be a regular file.'
+[ "$(stat -c '%u:%g:%a' -- "$PRIVATE_KEY")" = '2521:2522:600' ] ||
+  fail 'The private key must have owner/group/mode 2521:2522:600.'
+
+# Validate the unencrypted private key and derive its matching public key.
+# Never silently rotate a corrupt or encrypted identity.
+ssh-keygen -y -P '' -f "$PRIVATE_KEY" >"$work_dir/public-key" ||
+  fail 'Cannot read the private key; an unencrypted valid key is required.'
+IFS=' ' read -r key_type key_data <"$work_dir/public-key"
+[ "$key_type" = 'ssh-ed25519' ] || fail 'Only Ed25519 identities are supported.'
+mv -T -- "$work_dir/public-key" "$PUBLIC_KEY"
+
+for socket in "$PRIVATE_SOCKET" "$SSH_AUTH_SOCK"; do
+  if [ -e "$socket" ] || [ -L "$socket" ]; then
+    [ ! -L "$socket" ] && [ -S "$socket" ] ||
+      fail "$socket exists but is not a Unix socket."
+    rm -- "$socket"
+  fi
+done
+
+wait_for_socket() {
+  local socket=$1
+  local pid=$2
+  local attempt=0
+  until [ -S "$socket" ]; do
+    kill -0 "$pid" 2>/dev/null || fail "The service for $socket exited during startup."
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt 100 ] || fail "Timed out waiting for $socket."
+    sleep 0.1
+  done
+}
+
+# Only the proxy, running with the same UID, can reach this private socket.
+# Disable client-requested PKCS#11/FIDO provider loading.
+ssh-agent -D -P '' -a "$PRIVATE_SOCKET" &
+agent_pid=$!
+wait_for_socket "$PRIVATE_SOCKET" "$agent_pid"
+SSH_AUTH_SOCK="$PRIVATE_SOCKET" ssh-add "$PRIVATE_KEY" </dev/null
+
+# OpenSSH checks peer UIDs. The proxy deliberately authorizes consumers by
+# filesystem group instead, without exposing keys or a network listener.
+socat \
+  "UNIX-LISTEN:$SSH_AUTH_SOCK,fork,max-children=16,backlog=16,mode=0660" \
+  "UNIX-CONNECT:$PRIVATE_SOCKET" &
+proxy_pid=$!
+wait_for_socket "$SSH_AUTH_SOCK" "$proxy_pid"
+ssh-add -l >/dev/null
+
+printf 'SSH agent ready at %s (consumer GID: 2522).\n' "$SSH_AUTH_SOCK"
+printf 'Public key:\n%s %s\n' "$key_type" "$key_data"
+printf 'Fingerprint:\n'
+ssh-keygen -lf "$PUBLIC_KEY"
+
+# Bash waits for either service; tini reaps orphaned proxy workers.
+status=0
+wait -n "$agent_pid" "$proxy_pid" || status=$?
+fail "A required service exited unexpectedly (status $status)."

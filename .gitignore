@@ -1,0 +1,10 @@
+# Never commit SSH identities or local environment secrets.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_*
+keys/
+reports/
+*.tar
