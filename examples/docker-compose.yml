@@ -1,0 +1,27 @@
+services:
+  ssh-agent:
+    image: "${SSH_AGENT_IMAGE:?Set SSH_AGENT_IMAGE to your published ghcr.io image reference}"
+    user: "2521:2522"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    network_mode: none
+    pids_limit: 32
+    mem_limit: 128m
+    cpus: 0.5
+    restart: unless-stopped
+    stop_grace_period: 10s
+    volumes:
+      - agent-keys:/var/lib/ssh-agent/keys
+      - agent-socket:/run/ssh-agent
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+volumes:
+  agent-keys:
+  agent-socket:
