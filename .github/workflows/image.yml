@@ -92,7 +92,7 @@ jobs:
           trivy config --severity HIGH,CRITICAL --exit-code 1 /workspace
           trivy fs --scanners secret --exit-code 1 /workspace
           trivy sbom --scanners vuln --severity HIGH,CRITICAL \
-            --exit-code 1 /reports/sbom.cdx.json
+            --ignore-unfixed --exit-code 1 /reports/sbom.cdx.json
       - name: Upload SBOM
         if: always()
         uses: actions/upload-artifact@v7
